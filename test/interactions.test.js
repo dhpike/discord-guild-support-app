@@ -254,6 +254,7 @@ describe('interaction routing', () => {
       channelTwoId: 'voice-2',
       ownerId: 'user-1',
       startIn: '10',
+      remainingTime: undefined,
     }]);
 
     const status = await handleInteraction({
@@ -282,6 +283,35 @@ describe('interaction routing', () => {
     assert.equal(stopped.data.flags, 64);
     assert.match(stopped.data.content, /已停止/);
     assert.deepEqual(calls[1], ['stop', 'guild-1']);
+  });
+
+  it('passes an in-progress countdown through setup and replies privately', async () => {
+    let input;
+    const response = await handleInteraction({
+      type: 2,
+      guild_id: 'guild-late',
+      member: { user: { id: 'user-1' } },
+      data: {
+        name: 'guildwar',
+        options: [{ type: 1, name: 'setup', options: [
+          { name: 'remaining_time', value: '24:30' },
+          { name: 'channel_one', value: 'attack' },
+          { name: 'channel_two', value: 'defense' },
+        ] }],
+      },
+    }, { baiyeService: {
+      async setup(value) {
+        input = value;
+        return { ...value, phase: 'running', remainingToStartMs: 0, remainingToEndMs: 1_470_000 };
+      },
+    } });
+    assert.equal(input.startIn, undefined);
+    assert.equal(input.remainingTime, '24:30');
+    assert.equal(input.channelOneId, 'attack');
+    assert.equal(input.channelTwoId, 'defense');
+    assert.equal(response.data.flags, 64);
+    assert.match(response.data.content, /24 分 30 秒/);
+    assert.match(response.data.content, /不会补播/);
   });
 
   it('resolves the two default guildwar voice channels when overrides are omitted', async () => {
@@ -326,6 +356,7 @@ describe('interaction routing', () => {
       channelTwoId: 'defense-voice',
       ownerId: 'user-1',
       startIn: '1:29',
+      remainingTime: undefined,
     });
   });
 });

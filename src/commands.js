@@ -110,13 +110,21 @@ export const GUILDWAR_COMMAND = {
     {
       type: CommandOptionType.SUB_COMMAND,
       name: 'setup',
-      description: '选择两队语音频道并设置距离开战时间',
+      description: '选择两队语音频道，设置开战前等待或开战后的剩余时间',
       options: [
         {
           type: CommandOptionType.STRING,
           name: 'start_in_minutes',
-          description: '距离开战时间：10 表示 10 分钟，1:29 表示 1 分 29 秒',
-          required: true,
+          description: '开战前填写：距离开战的分钟或分:秒，如 1:29；与 remaining_time 二选一',
+          required: false,
+          min_length: 1,
+          max_length: 6,
+        },
+        {
+          type: CommandOptionType.STRING,
+          name: 'remaining_time',
+          description: '开战后填写：游戏内剩余倒计时，如 24:30；与 start_in_minutes 二选一',
+          required: false,
           min_length: 1,
           max_length: 6,
         },

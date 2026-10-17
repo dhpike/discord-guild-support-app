@@ -112,7 +112,7 @@ export function buildWarningPcm(
   return Buffer.concat(parts);
 }
 
-export function parseStartDelay(value) {
+function parseMinutesAndSeconds(value, label) {
   const input = String(value ?? '').trim();
   let milliseconds;
 
@@ -121,13 +121,26 @@ export function parseStartDelay(value) {
   } else {
     const match = input.match(/^(\d{1,3}):([0-5]\d)$/);
     if (!match) {
-      throw new Error('距离开战时间请输入分钟（如 10）或分:秒（如 1:29）。');
+      throw new Error(`${label}请输入分钟（如 10）或分:秒（如 1:29）。`);
     }
     milliseconds = ((Number(match[1]) * 60) + Number(match[2])) * 1000;
   }
 
+  return milliseconds;
+}
+
+export function parseStartDelay(value) {
+  const milliseconds = parseMinutesAndSeconds(value, '距离开战时间');
   if (!Number.isSafeInteger(milliseconds) || milliseconds < 0 || milliseconds > MAX_BAIYE_START_DELAY_MS) {
     throw new Error('距离开战时间必须在 0 到 180 分钟之间。');
+  }
+  return milliseconds;
+}
+
+export function parseRemainingTime(value) {
+  const milliseconds = parseMinutesAndSeconds(value, '战斗剩余时间');
+  if (!Number.isSafeInteger(milliseconds) || milliseconds <= 0 || milliseconds > BAIYE_DURATION_MS) {
+    throw new Error('战斗剩余时间必须大于 0 且不超过 30:00。');
   }
   return milliseconds;
 }
@@ -346,7 +359,7 @@ export class BaiyeVoiceService {
 
     for (const refreshOffset of BAIYE_REFRESH_OFFSETS_MS) {
       const firstWarningAt = session.startAt + refreshOffset - BAIYE_FIRST_WARNING_LEAD_MS;
-      if (firstWarningAt > this.now()) {
+      if (firstWarningAt >= this.now()) {
         this.schedule(session, firstWarningAt, () => {
           this.enqueueBothChannels(session, 'mob');
         });
@@ -355,7 +368,7 @@ export class BaiyeVoiceService {
 
     for (const remainingCountdown of BAIYE_DRAGON_COUNTDOWNS_MS) {
       const warningAt = session.endAt - remainingCountdown;
-      if (warningAt > this.now()) {
+      if (warningAt >= this.now()) {
         this.schedule(session, warningAt, () => {
           this.enqueueBothChannels(session, 'dragon');
         });
@@ -369,23 +382,36 @@ export class BaiyeVoiceService {
     }
   }
 
-  async setup({ guildId, channelOneId, channelTwoId, ownerId, startIn }) {
+  async setup({ guildId, channelOneId, channelTwoId, ownerId, startIn, remainingTime }) {
     if (!guildId || !channelOneId || !channelTwoId || !ownerId) {
       throw new Error('百业战设置缺少服务器、两个语音频道或发起人。');
     }
     if (channelOneId === channelTwoId) throw new Error('请选择两个不同的语音频道。');
     if (this.sessions.has(guildId)) throw new Error('这个服务器已经有一个百业战提醒，请先使用 /guildwar stop。');
 
-    const startDelayMs = parseStartDelay(startIn);
+    const hasStartIn = startIn !== undefined && startIn !== null;
+    const hasRemainingTime = remainingTime !== undefined && remainingTime !== null;
+    if (hasStartIn === hasRemainingTime) {
+      throw new Error('请二选一：开战前填写 start_in_minutes，开战后填写 remaining_time（游戏内剩余倒计时，如 24:30）。');
+    }
+    const setupAt = this.now();
+    const startAt = hasRemainingTime
+      ? setupAt + parseRemainingTime(remainingTime) - BAIYE_DURATION_MS
+      : setupAt + parseStartDelay(startIn);
 
     await this.prepare();
-    const startAt = this.now() + startDelayMs;
+    // Another setup may have completed while the voice gateway was connecting.
+    if (this.sessions.has(guildId)) throw new Error('这个服务器已经有一个百业战提醒，请先使用 /guildwar stop。');
+    if (startAt + BAIYE_DURATION_MS <= this.now()) {
+      throw new Error('连接语音服务期间战斗已结束，请重新确认剩余时间。');
+    }
+    const running = startAt <= this.now();
     const session = {
       guildId,
       channelOneId,
       channelTwoId,
       ownerId,
-      phase: startDelayMs === 0 ? 'running' : 'waiting',
+      phase: running ? 'running' : 'waiting',
       startAt,
       endAt: startAt + BAIYE_DURATION_MS,
       timers: new Set(),
@@ -395,7 +421,7 @@ export class BaiyeVoiceService {
     };
     this.sessions.set(guildId, session);
 
-    if (startDelayMs === 0) this.begin(session);
+    if (running) this.begin(session);
     else this.schedule(session, startAt, () => this.begin(session));
     return this.getSession(guildId);
   }

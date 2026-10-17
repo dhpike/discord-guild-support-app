@@ -247,6 +247,7 @@ function baiyeStatusMessage(session) {
     `百业战进行中，距离结束还有 ${formatRemainingDuration(session.remainingToEndMs)}。`,
     `一队频道：<#${session.channelOneId}>（刷新前 35 秒）`,
     `二队频道：<#${session.channelTwoId}>（一队播完后立即接续）`,
+    '仅播报之后的提醒，已错过的提醒不会补播；大龙提醒在剩余 17:05 和 16:05 时触发。',
   ].join('\n');
 }
 
@@ -283,6 +284,7 @@ async function handleBaiyeCommand(interaction, options, service, findVoiceChanne
       channelTwoId,
       ownerId: userId,
       startIn,
+      remainingTime: getOption(subOptions, 'remaining_time'),
     });
     if (session.phase === 'error') throw new Error(session.errorMessage);
     return ephemeral(`百业战语音提醒已设置。\n${baiyeStatusMessage(session)}`);

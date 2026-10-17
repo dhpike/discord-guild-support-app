@@ -12,6 +12,7 @@ import {
   buildWarningPcm,
   formatRemainingDuration,
   parseStartDelay,
+  parseRemainingTime,
   readPcmWave,
 } from '../src/baiye-voice.js';
 
@@ -56,6 +57,88 @@ function createFakeClock(start = 0) {
 }
 
 describe('baiye voice reminders', () => {
+  for (const { input, seconds, reminders } of [
+    { input: '24:30', seconds: 1470, reminders: [[1235, 'mob'], [1025, 'dragon'], [965, 'dragon'], [935, 'mob'], [635, 'mob'], [335, 'mob']] },
+    { input: '16:30', seconds: 990, reminders: [[965, 'dragon'], [935, 'mob'], [635, 'mob'], [335, 'mob']] },
+    { input: '17:05', seconds: 1025, reminders: [[1025, 'dragon'], [965, 'dragon'], [935, 'mob'], [635, 'mob'], [335, 'mob']] },
+    { input: '0:01', seconds: 1, reminders: [] },
+  ]) {
+    it(`resumes at ${input} and plays only remaining reminders before ending`, async () => {
+      const clock = createFakeClock();
+      const events = [];
+      const service = new BaiyeVoiceService({
+        now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+        connector: {
+          async prepare() {},
+          async connect({ channelId }) {
+            return {
+              async playWarning(kind) { events.push([clock.now(), channelId, kind]); },
+              destroy() {},
+            };
+          },
+        },
+      });
+      const session = await service.setup({
+        guildId: 'guild', channelOneId: 'attack', channelTwoId: 'defense',
+        ownerId: 'owner', remainingTime: input,
+      });
+      assert.equal(session.phase, 'running');
+      assert.equal(session.remainingToStartMs, 0);
+      assert.equal(session.remainingToEndMs, seconds * 1000);
+      assert.deepEqual(events, []);
+      await clock.advance(seconds * 1000);
+      assert.deepEqual(events, reminders.flatMap(([remaining, kind]) => [
+        [(seconds - remaining) * 1000, 'attack', kind],
+        [(seconds - remaining) * 1000, 'defense', kind],
+      ]));
+      assert.equal(service.getSession('guild'), null);
+      await clock.advance(30 * 60 * 1000);
+      assert.equal(events.length, reminders.length * 2);
+    });
+  }
+
+  it('validates mutually exclusive timing inputs before connecting', async () => {
+    let prepares = 0;
+    const service = new BaiyeVoiceService({ connector: { async prepare() { prepares += 1; } } });
+    const base = { guildId: 'guild', channelOneId: 'attack', channelTwoId: 'defense', ownerId: 'owner' };
+    await assert.rejects(service.setup(base), /二选一/);
+    await assert.rejects(service.setup({ ...base, startIn: '0', remainingTime: '24:30' }), /二选一/);
+    for (const input of ['', '-1', 'abc', '24:60', '0', '0:00', '30:01', '31', '99999999999999999']) {
+      await assert.rejects(service.setup({ ...base, remainingTime: input }), /战斗剩余时间/);
+    }
+    assert.equal(parseRemainingTime('30:00'), 1_800_000);
+    assert.equal(parseRemainingTime('24'), 1_440_000);
+    assert.equal(prepares, 0);
+  });
+
+  it('accounts for gateway preparation time and stops resumed timers', async () => {
+    const clock = createFakeClock();
+    const events = [];
+    const service = new BaiyeVoiceService({
+      now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+      connector: {
+        async prepare() { await clock.advance(10_000); },
+        async connect({ channelId }) {
+          return {
+            async playWarning(kind) { events.push([clock.now(), channelId, kind]); },
+            destroy() {},
+          };
+        },
+      },
+    });
+    const session = await service.setup({
+      guildId: 'guild', channelOneId: 'attack', channelTwoId: 'defense',
+      ownerId: 'owner', remainingTime: '17:10',
+    });
+    assert.equal(session.remainingToEndMs, 17 * 60 * 1000);
+    await clock.advance(55_000);
+    assert.deepEqual(events, [[65_000, 'attack', 'dragon'], [65_000, 'defense', 'dragon']]);
+    service.stop('guild');
+    await clock.advance(30 * 60 * 1000);
+    assert.equal(events.length, 2);
+    assert.equal(service.getSession('guild'), null);
+  });
+
   it('counts down from 30 minutes and visits two channels before each refresh', async () => {
     const clock = createFakeClock(1_000_000);
     const events = [];
